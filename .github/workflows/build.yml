@@ -1,4 +1,4 @@
-name: Build PecoFence ZIP
+name: Build PecoFence
 
 on:
   workflow_dispatch:
@@ -17,7 +17,7 @@ jobs:
           $zip = Join-Path $env:GITHUB_WORKSPACE "PecoFence.zip"
 
           if (-not (Test-Path -LiteralPath $zip)) {
-            throw "PecoFence.zip not found at $zip"
+            throw "PecoFence.zip not found"
           }
 
           $dst = Join-Path $env:RUNNER_TEMP "pecofence-source"
@@ -29,19 +29,24 @@ jobs:
           New-Item -ItemType Directory -Path $dst | Out-Null
           Expand-Archive -LiteralPath $zip -DestinationPath $dst -Force
 
-          $cargo = Get-ChildItem -LiteralPath $dst -Filter "Cargo.toml" -File -Recurse |
+          $cargo = Get-ChildItem -LiteralPath $dst `
+            -Filter "Cargo.toml" `
+            -File `
+            -Recurse |
             Select-Object -First 1
 
           if (-not $cargo) {
-            throw "Cargo.toml not found inside archive"
+            throw "Cargo.toml not found"
           }
 
-          Add-Content -LiteralPath $env:GITHUB_ENV -Value "PROJECT_DIR=$($cargo.Directory.FullName)"
+          Add-Content `
+            -LiteralPath $env:GITHUB_ENV `
+            -Value "PROJECT_DIR=$($cargo.Directory.FullName)"
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Build official portable package
+      - name: Build portable package
         shell: pwsh
         run: |
           Set-Location -LiteralPath $env:PROJECT_DIR
@@ -49,27 +54,66 @@ jobs:
           & ".\scripts\make-portable.ps1"
 
           if ($LASTEXITCODE -ne 0) {
-            throw "PecoFence portable packaging failed"
+            throw "Portable build failed"
           }
 
-      - name: Locate portable ZIP
+      - name: Extract portable package
         shell: pwsh
         run: |
-          $package = Get-ChildItem -LiteralPath (Join-Path $env:PROJECT_DIR "dist") -Filter "pecofence-*-x64.zip" -File |
+          $dist = Join-Path $env:PROJECT_DIR "dist"
+
+          $package = Get-ChildItem `
+            -LiteralPath $dist `
+            -Filter "pecofence-*-x64.zip" `
+            -File |
             Sort-Object LastWriteTime -Descending |
             Select-Object -First 1
 
           if (-not $package) {
-            throw "Portable ZIP was not created"
+            throw "Portable package not found"
           }
 
-          Copy-Item -LiteralPath $package.FullName `
-            -Destination (Join-Path $env:GITHUB_WORKSPACE "PecoFence-Windows-x64.zip") `
+          $portable = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "PecoFence-Portable"
+
+          if (Test-Path -LiteralPath $portable) {
+            Remove-Item `
+              -LiteralPath $portable `
+              -Recurse `
+              -Force
+          }
+
+          New-Item `
+            -ItemType Directory `
+            -Path $portable |
+            Out-Null
+
+          Expand-Archive `
+            -LiteralPath $package.FullName `
+            -DestinationPath $portable `
             -Force
 
-      - name: Upload ready-to-run ZIP
+          Write-Host "Portable files:"
+          Get-ChildItem `
+            -LiteralPath $portable `
+            -Recurse |
+            Select-Object FullName
+
+          $loader = Get-ChildItem `
+            -LiteralPath $portable `
+            -Filter "WebView2Loader.dll" `
+            -File `
+            -Recurse |
+            Select-Object -First 1
+
+          if (-not $loader) {
+            throw "WebView2Loader.dll missing from portable package"
+          }
+
+      - name: Upload portable application
         uses: actions/upload-artifact@v4
         with:
-          name: PecoFence-Windows-x64
-          path: PecoFence-Windows-x64.zip
+          name: PecoFence-Portable
+          path: PecoFence-Portable/
           if-no-files-found: error
