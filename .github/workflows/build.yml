@@ -6,6 +6,7 @@ on:
 jobs:
   build:
     runs-on: windows-latest
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -14,52 +15,59 @@ jobs:
         shell: pwsh
         run: |
           $zip = Join-Path $env:GITHUB_WORKSPACE "PecoFence.zip"
-          Write-Host "Workspace: $env:GITHUB_WORKSPACE"
-          Get-ChildItem -LiteralPath $env:GITHUB_WORKSPACE -Force
+
           if (-not (Test-Path -LiteralPath $zip)) {
             throw "PecoFence.zip not found at $zip"
           }
+
           $dst = Join-Path $env:RUNNER_TEMP "pecofence-source"
+
           if (Test-Path -LiteralPath $dst) {
             Remove-Item -LiteralPath $dst -Recurse -Force
           }
+
           New-Item -ItemType Directory -Path $dst | Out-Null
           Expand-Archive -LiteralPath $zip -DestinationPath $dst -Force
-          $cargo = Get-ChildItem -LiteralPath $dst -Filter "Cargo.toml" -File -Recurse | Select-Object -First 1
+
+          $cargo = Get-ChildItem -LiteralPath $dst -Filter "Cargo.toml" -File -Recurse |
+            Select-Object -First 1
+
           if (-not $cargo) {
             throw "Cargo.toml not found inside archive"
           }
+
           Add-Content -LiteralPath $env:GITHUB_ENV -Value "PROJECT_DIR=$($cargo.Directory.FullName)"
-          Write-Host "Project: $($cargo.Directory.FullName)"
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Build release
+      - name: Build official portable package
         shell: pwsh
         run: |
           Set-Location -LiteralPath $env:PROJECT_DIR
-          cargo build --locked --release
 
-      - name: Package
+          & ".\scripts\make-portable.ps1"
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "PecoFence portable packaging failed"
+          }
+
+      - name: Locate portable ZIP
         shell: pwsh
         run: |
-          $release = Join-Path $env:PROJECT_DIR "target\release"
-          if (-not (Test-Path -LiteralPath $release)) {
-            throw "Release directory not found: $release"
-          }
-          $out = Join-Path $env:RUNNER_TEMP "PecoFence-Windows-x64"
-          New-Item -ItemType Directory -Path $out -Force | Out-Null
-          Get-ChildItem -LiteralPath $release -File |
-            Where-Object { $_.Extension -in ".exe", ".dll", ".json" } |
-            Copy-Item -Destination $out
-          $zipOut = Join-Path $env:GITHUB_WORKSPACE "PecoFence-Windows-x64.zip"
-          if (Test-Path -LiteralPath $zipOut) {
-            Remove-Item -LiteralPath $zipOut -Force
-          }
-          Compress-Archive -Path (Join-Path $out "*") -DestinationPath $zipOut -Force
+          $package = Get-ChildItem -LiteralPath (Join-Path $env:PROJECT_DIR "dist") -Filter "pecofence-*-x64.zip" -File |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 1
 
-      - name: Upload
+          if (-not $package) {
+            throw "Portable ZIP was not created"
+          }
+
+          Copy-Item -LiteralPath $package.FullName `
+            -Destination (Join-Path $env:GITHUB_WORKSPACE "PecoFence-Windows-x64.zip") `
+            -Force
+
+      - name: Upload ready-to-run ZIP
         uses: actions/upload-artifact@v4
         with:
           name: PecoFence-Windows-x64
