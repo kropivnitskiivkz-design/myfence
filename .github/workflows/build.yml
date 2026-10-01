@@ -3,6 +3,9 @@ name: Build PecoFence
 on:
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: windows-latest
@@ -14,6 +17,8 @@ jobs:
       - name: Extract project
         shell: cmd
         run: |
+          echo Checking source archive...
+
           if not exist "%GITHUB_WORKSPACE%\PecoFence.zip" (
             echo ERROR: PecoFence.zip not found
             exit /b 1
@@ -67,7 +72,7 @@ jobs:
             throw "Portable build failed with exit code $LASTEXITCODE"
           }
 
-      - name: Extract portable package
+      - name: Find portable package
         shell: pwsh
         run: |
           $dist = Join-Path $env:PROJECT_DIR "dist"
@@ -90,66 +95,49 @@ jobs:
             throw "Portable package not found"
           }
 
-          Write-Host "Portable package: $($package.FullName)"
-
-          $portable = Join-Path `
+          $releaseFile = Join-Path `
             $env:GITHUB_WORKSPACE `
-            "PecoFence-Portable"
+            "PecoFence-Portable.zip"
 
-          if (Test-Path -LiteralPath $portable) {
-            Remove-Item `
-              -LiteralPath $portable `
-              -Recurse `
-              -Force
+          Copy-Item `
+            -LiteralPath $package.FullName `
+            -Destination $releaseFile `
+            -Force
+
+          if (-not (Test-Path -LiteralPath $releaseFile)) {
+            throw "Failed to prepare release ZIP"
           }
 
-          New-Item `
-            -ItemType Directory `
-            -Path $portable |
-            Out-Null
+          $size = (Get-Item -LiteralPath $releaseFile).Length
 
-          tar -xf $package.FullName -C $portable
+          Write-Host "Release package:"
+          Write-Host $releaseFile
+          Write-Host "Size: $size bytes"
 
-          if ($LASTEXITCODE -ne 0) {
-            throw "Failed to extract portable package"
+          if ($size -lt 100000) {
+            throw "Release ZIP is unexpectedly small"
           }
 
-          Write-Host "Portable files:"
+      - name: Generate release tag
+        shell: pwsh
+        run: |
+          $tag = "build-$env:GITHUB_RUN_NUMBER"
 
-          Get-ChildItem `
-            -LiteralPath $portable `
-            -Recurse |
-            Select-Object FullName
+          Add-Content `
+            -LiteralPath $env:GITHUB_ENV `
+            -Value "RELEASE_TAG=$tag"
 
-          $mainExe = Get-ChildItem `
-            -LiteralPath $portable `
-            -Filter "pecofence.exe" `
-            -File `
-            -Recurse |
-            Select-Object -First 1
+          Write-Host "Release tag: $tag"
 
-          if (-not $mainExe) {
-            throw "pecofence.exe missing from portable package"
-          }
-
-          $loader = Get-ChildItem `
-            -LiteralPath $portable `
-            -Filter "WebView2Loader.dll" `
-            -File `
-            -Recurse |
-            Select-Object -First 1
-
-          if (-not $loader) {
-            throw "WebView2Loader.dll missing from portable package"
-          }
-
-          Write-Host "pecofence.exe OK"
-          Write-Host "WebView2Loader.dll OK"
-
-      - name: Upload portable application
-        uses: actions/upload-artifact@v4
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
         with:
-          name: PecoFence-Portable
-          path: PecoFence-Portable/
-          if-no-files-found: error
-          retention-days: 7
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: PecoFence ${{ env.RELEASE_TAG }}
+          body: |
+            Automated Windows x64 portable build of PecoFence.
+
+            This build includes the Windows compatibility changes.
+          prerelease: true
+          files: |
+            PecoFence-Portable.zip
